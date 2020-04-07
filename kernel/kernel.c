@@ -6,13 +6,12 @@
 #include "../libc/rust_types.h"
 #include "../cpu/descriptor_tables.h"
 #include "execute.h"
+#include "../util/debugging.h"
 
 #include "../applications/counter/counter.h"
 
 #define MAXSPORADIC MAXPROCESS
 #define MAXDEVICE MAXPROCESS
-
-char debug_buffer[64];
 
 //// TODO: Dynamically allocate PPP, because increasing this will cause a bootloop lol
 int PPP[256];
