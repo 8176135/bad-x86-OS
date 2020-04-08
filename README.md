@@ -9,3 +9,4 @@ The following directories contain code that is mostly mine. (Exceptions are ment
 - `kernel/`
 - `libc/`
 - `util/`
+- `applciation/`

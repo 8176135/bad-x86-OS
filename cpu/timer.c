@@ -9,7 +9,7 @@ u32 fake_tick = 0;
 
 static void timer_callback(registers_t *regs) {
     fake_tick++;
-    if (fake_tick >= 100) {
+    if (fake_tick >= 50) {
         fake_tick = 0;
         tick++;
         check_schedule(tick, regs);
