@@ -56,13 +56,21 @@ PID currently_running_process_pid = INVALIDPID;
 void switch_process(PID new_pid, registers_t* old_regs) {
     if (currently_running_process_pid == new_pid) { // Nothing to do here.
         return;
+    } else if (new_pid == INVALIDPID) {
+        kprint("Invalid PID to switch to\n");
+        return;
     }
+    kprint("Currently switching process\n");
 
-    // Do we need everything? Who knows! just copy them.
-    processes[currently_running_process_pid - 1].regs = *old_regs;
+    if (currently_running_process_pid != INVALIDPID) {
+        // Do we need everything? Who knows! just copy them.
+        processes[currently_running_process_pid - 1].regs = *old_regs;
+    }
 
     currently_running_process_pid = new_pid;
     registers_t *regs = &processes[currently_running_process_pid - 1].regs;
+    kprint("YEIOREIRE");
+    dbg_hex("EDX: ", regs->edx);
 
     // TODO: Use iret and set eflags to set interrupt flag. Though now that I think about it, it should be fine as it is
     // TODO: Add more stuff to restore
@@ -72,20 +80,24 @@ void switch_process(PID new_pid, registers_t* old_regs) {
       mov %2, %%ebp;       \
       mov %3, %%eax;       \
       mov %4, %%ecx;       \
-      mov %5, %%edx;       \
-      mov %6, %%ebx;       \
-      mov %7, %%esi;       \
-      mov %8, %%edi;       \
+      mov %5, %%ecx;       \
       sti;                 \
       jmp *%0           "
-    : : "g"(regs->eip), "g"(regs->esp), "g"(regs->ebp), "g"(regs->eax), "g"(regs->ecx), "g"(regs->edx), "g"(regs->ebx), "g"(regs->esi), "g"(regs->edi));
+    : : "g"(regs->eip), "g"(regs->esp), "g"(regs->ebp), "g"(regs->eax), "g"(regs->ecx), "g"(regs->ecx));//, "g"(regs->ebx), "g"(regs->esi), "g"(regs->edi));
+    kprint("You can't see this\n");
+//      mov %3, %%eax;
+//      mov %4, %%ecx;
+//      mov %5, %%edx;
+//      mov %6, %%ebx;
+//      mov %7, %%esi;
+//      mov %8, %%edi;
 }
 //
 PID pid_from_name(i32 n) {
     if (n == IDLE) {
         return INVALIDPID;
     }
-
+    dbg("Process length: ",processes_length);
     for (usize i = 0; i < processes_length; ++i) {
         if (processes[i].n == n) {
             return processes[i].pid;
@@ -108,7 +120,7 @@ void check_schedule(u32 tick, registers_t* regs) {
 //    // TODO: Interrupts should already be disabled here... probably should check at some point
     // Just clear it in case I'm wrong.
     asm("cli");
-
+    kprint("Tick");
     for (usize i = 0; i < processes_length; ++i) {
         if (processes[i].scheduling_level == DEVICE && tick % processes[i].n == 0) {
             if (device_length >= MAXDEVICE) {
@@ -127,7 +139,13 @@ void check_schedule(u32 tick, registers_t* regs) {
         switch_process(device_buf[device_idx], regs);
     }
 
+    if (currently_running_process_pid == INVALIDPID) {
+        last_change_tick = tick;
+        // TODO: This is such a bad idea
+        goto LAUNCH_CURRENT_PPP;
+    }
     i32 delta = tick - last_change_tick;
+
     process_t* current_process = &processes[currently_running_process_pid - 1];
     switch (current_process->scheduling_level) {
         case DEVICE:
@@ -140,9 +158,11 @@ void check_schedule(u32 tick, registers_t* regs) {
             if (PPPMax[PPP_index] < delta) { // Times up
                 last_change_tick = tick;
                 PPP_index = (PPP_index + 1) % PPPLen;
+                LAUNCH_CURRENT_PPP:;
                 PID new_pid = pid_from_name(PPP[PPP_index]);
                 if (new_pid == INVALIDPID) { // No process is taking this name yet, so just idle
                     if (sporadic_length == 0) { // No sporadic process scheduled either, just go and idle
+                        kprint("CPU Idling \n");
                         return;
                     }
                     new_pid = sporadic_buf[sporadic_idx];
@@ -188,7 +208,7 @@ void OS_Init() {
     PPP[3] = 1;
     PPPMax[3] = 5;
 
-    PPP[4] = -1;
+    PPP[4] = IDLE;
     PPPMax[4] = 5;
 
     memory_set((u8 *) processes, INVALIDPID, sizeof(processes));
@@ -196,7 +216,7 @@ void OS_Init() {
     memory_set((u8 *) name_registry, 0, sizeof(name_registry));
 
     PPP_index = 0;
-    PPPLen = 0;
+    PPPLen = 5;
     processes_length = 0;
     sporadic_idx = 0;
 
@@ -206,7 +226,7 @@ void OS_Init() {
 void OS_Start() {
     irq_install();
     kprint("OS Started!!");
-//    OS_Create((void*)counter_main, 0, PERIODIC, 1);
+    OS_Create((void*)counter_main, 0, PERIODIC, 1);
 
     while (1) {}
 }

@@ -123,7 +123,6 @@ void isr_handler(registers_t *r) {
     kprint(s);
     kprint("\n");
     kprint(exception_messages[r->int_no]);
-//    asm("int $2");
     kprint("\n----\n");
 }
 
@@ -148,7 +147,7 @@ void irq_install() {
     /* Enable interruptions */
     asm volatile("sti");
     /* IRQ0: timer */
-    init_timer(5000);
+    init_timer(1);
     /* IRQ1: keyboard */
     init_keyboard();
 }
