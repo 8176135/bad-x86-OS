@@ -1,6 +1,8 @@
 #include "string.h"
 #include <stdint.h>
 
+// From https://github.com/cfenollosa/os-tutorial
+
 /**
  * K&R implementation
  */

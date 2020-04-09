@@ -38,7 +38,7 @@ int counter_main() {
         int_to_ascii(i, num);
         kprint(num);
         kprint("\n");
-        if (i % 25 == 0 && i) {
+        if (i % 50 == 0 && i) {
 			OS_Yield();
         }
     }

@@ -3,10 +3,10 @@
 
 #include "rust_types.h"
 
-// Literally total addressable space
-#define MAX_SINGLE_MALLOC 0x100000000
 #define BASE_MEM_LOCATION 0x2000000
 #define BASE_STACK_LOCATION 0x800000
+// ~ 500Kb of stack... should be enough until I get paging working right?
+#define MAX_STACK_SIZE 0x80000
 
 #define MEMORY_IN_USE 0xF0
 #define MEMORY_CLEAR 0x0F

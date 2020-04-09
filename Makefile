@@ -1,5 +1,5 @@
-C_SOURCES = $(wildcard kernel/*.c drivers/*.c cpu/*.c util/*.c libc/*.c applications/counter/*.c applications/reminder/*.c applications/idle/*.c)
-HEADERS = $(wildcard kernel/*.h drivers/*.h cpu/*.h util/*.h libc/*.h applications/counter/*.h applications/reminder/*.h applications/idle/*.h)
+C_SOURCES = $(wildcard kernel/*.c drivers/*.c cpu/*.c util/*.c libc/*.c applications/counter/*.c applications/reminder/*.c applications/idle/*.c applications/memory_wiper/*.c)
+HEADERS = $(wildcard kernel/*.h drivers/*.h cpu/*.h util/*.h libc/*.h applications/counter/*.h applications/reminder/*.h   applications/idle/*.h applications/memory_wiper/*.h)
 # Nice syntax for file extension replacement
 OBJ = ${C_SOURCES:.c=.o cpu/interrupt.o cpu/gdt_from_c.o}
 

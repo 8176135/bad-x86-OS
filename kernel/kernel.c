@@ -391,6 +391,10 @@ PID OS_Create(void (*f)(void), i32 arg, u32 level, u32 n) {
 	return new_pid;
 }
 
+// TODO: Doesn't automatically terminate applications, but shouldn't be too hard,
+//   just push OS_Terminate onto the stack right before starting
+//   Does require `switch process` to know when a process is first starting though.
+//   Solves the iret problem too.
 void OS_Terminate(void) {
 	asm volatile ("cli");
 	usize idx = process_index_from_pid(currently_running_process_pid);
@@ -460,7 +464,7 @@ void OS_InitMemory() {
 	*(u8 *) (BASE_MEM_LOCATION + 1) = 0xFF;
 }
 
-/// Really stupid malloc. (a.k.a. ran-out-of-time-to-implement-something-good malloc)
+/// Malloc that walks through all the allocated memory regions, finding one big enough for the requested memory to be given
 /// Some protection against the user application from wrongly freeing stuff, kind of
 /// TODO: Have a hashset or binary tree to keep track of all the addresses that are currently allocated.
 MEMORY OS_Malloc(int val) {

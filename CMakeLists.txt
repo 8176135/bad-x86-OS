@@ -38,4 +38,4 @@ add_executable(my-x86-os
         libc/mem.h
         libc/rust_types.h
         libc/string.c
-        libc/string.h applications/counter/counter.c applications/counter/counter.h util/read_std.c util/read_std.h kernel/execute.c kernel/execute.h kernel/task.c kernel/task.h cpu/tss.c cpu/tss.h cpu/descriptor_tables.c cpu/descriptor_tables.h util/debugging.c util/debugging.h applications/reminder/reminder.c applications/reminder/reminder.h applications/idle/idle.c applications/idle/idle.h)
+        libc/string.h applications/counter/counter.c applications/counter/counter.h util/read_std.c util/read_std.h kernel/execute.c kernel/execute.h kernel/task.c kernel/task.h cpu/tss.c cpu/tss.h cpu/descriptor_tables.c cpu/descriptor_tables.h util/debugging.c util/debugging.h applications/reminder/reminder.c applications/reminder/reminder.h applications/idle/idle.c applications/idle/idle.h applications/memory_wiper/memory_wiper.c applications/memory_wiper/memory_wiper.h)
