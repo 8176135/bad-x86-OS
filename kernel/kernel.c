@@ -257,7 +257,8 @@ void check_schedule(u32 tick, registers_t *regs) {
 				next_pid = pid_from_name(PPP[PPP_index]);
 				dbg("Currently at PPP_index: ", PPP_index);
 			}
-			if (next_pid == INVALIDPID || (current_process && current_process->yielded)) { // No process is taking this name yet, or gave the time slot up
+			if (next_pid == INVALIDPID || (current_process &&
+										   current_process->yielded)) { // No process is taking this name yet, or gave the time slot up
 //				dbg("Sporadic Length: ", sporadic_length);
 				if (sporadic_length == 0) { // No sporadic process scheduled either, just go and idle
 					kprint(" -- CPU Idling \n");
@@ -319,8 +320,8 @@ void OS_Start() {
 	OS_Create((void *) counter_main, 3, PERIODIC, 4);
 	OS_Create((void *) counter_main, 4, SPORADIC, 5);
 	OS_Create((void *) counter_main, 5, SPORADIC, 6);
-	OS_Create((void *) reminder_main, 5, DEVICE  , 10);
-	OS_Create((void *) reminder_main, 5, DEVICE  , 20);
+	OS_Create((void *) reminder_main, 5, DEVICE, 10);
+	OS_Create((void *) reminder_main, 5, DEVICE, 20);
 
 	irq_install();
 	kprint("OS Started!!");
@@ -395,7 +396,7 @@ void OS_Terminate(void) {
 	usize idx = process_index_from_pid(currently_running_process_pid);
 	switch (processes[idx].scheduling_level) {
 		case DEVICE:
-			if (processes[idx].pid != device_buf[device_idx] ) {
+			if (processes[idx].pid != device_buf[device_idx]) {
 				dbg("ASSERT FAIL: OS_Terminate Device PID doesn't match: ", processes[idx].pid);
 				dbg("!= ", device_buf[device_idx]);
 				OS_Abort();
@@ -405,7 +406,7 @@ void OS_Terminate(void) {
 			device_length--;
 			break;
 		case SPORADIC:
-			if (processes[idx].pid != sporadic_buf[sporadic_idx] ) {
+			if (processes[idx].pid != sporadic_buf[sporadic_idx]) {
 				dbg("ASSERT FAIL: OS_Terminate Sporadic PID doesn't match: ", processes[idx].pid);
 				dbg("!= ", sporadic_buf[sporadic_idx]);
 				OS_Abort();
@@ -449,13 +450,23 @@ void OS_Yield(void) {
 	asm volatile ("int $0x13"); // Trigger a reserved interrupt number (Are you suppose to use reserved stuff?)
 }
 
+// TODO: Replace this with a binary tree or hashset, also can keep track of PID of which process owns what memory
+#define MAX_NUMBER_OF_MALLOCS 256
+usize address_book[MAX_NUMBER_OF_MALLOCS];
+
 void OS_InitMemory() {
-//	memory_set(BASE_MEM_LOCATION)
+	memory_set((u8 *) address_book, 0, sizeof(address_book));
+	*(u8 *) BASE_MEM_LOCATION = MEMORY_CLEAR;
+	*(u8 *) (BASE_MEM_LOCATION + 1) = 0xFF;
 }
 
 /// Really stupid malloc. (a.k.a. ran-out-of-time-to-implement-something-good malloc)
 /// Some protection against the user application from wrongly freeing stuff, kind of
+/// TODO: Have a hashset or binary tree to keep track of all the addresses that are currently allocated.
 MEMORY OS_Malloc(int val) {
+	if (val < 2) {
+		return 0;
+	}
 	u32 actual_size = val + 1;
 	// Round up to the next power of 2
 	// From: https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
@@ -467,16 +478,55 @@ MEMORY OS_Malloc(int val) {
 	actual_size |= actual_size >> 16;
 	actual_size++;
 
-	int initial = BASE_MEM_LOCATION;
-	usize i = BASE_MEM_LOCATION;
-	while (i < BASE_STACK_LOCATION) {
-		usize memory_space = 0x1 << (*(u8*)(i + 1));
-		if (*(u8 *)i == 0xF0) {
-			i += memory_space;
-		} else if (*(u8 *)i == 0x0F) {
-			if (memory_space >= actual_size) { // Yay, got enough space, allocate it
-				*(u8 *)i = 0xF0;
-//				memory_space =
+	int total_available_space = 0;
+	usize current_base = BASE_MEM_LOCATION;
+	while (current_base < BASE_STACK_LOCATION - 2) {
+		usize memory_space = 0x1 << (*(u8 *) (current_base + 1));
+		if (*(u8 *) current_base == MEMORY_IN_USE) {
+			current_base += memory_space;
+			total_available_space = 0;
+		} else if (*(u8 *) current_base == MEMORY_CLEAR) {
+			total_available_space += memory_space;
+			if (current_base + actual_size >= BASE_STACK_LOCATION - 2) {
+				return 0;
+			}
+			if (total_available_space >= actual_size) { // Yay, got enough space, allocate it
+				current_base -= total_available_space - memory_space;
+
+				// TODO: maybe use this?
+				// (8 - __builtin_clz(actual_size))
+				for (u8 ii = 0; ii < 32; ++ii) {
+					if (actual_size >> ii != 1) continue;
+					u8 *next_val = (u8 *) (current_base + actual_size);
+
+					if (*next_val != MEMORY_IN_USE && *next_val != MEMORY_CLEAR) {
+						int temp = -1;
+						int should_set_next_val = FALSE;
+						for (int iii = 0; iii < MAX_NUMBER_OF_MALLOCS; ++iii) {
+							if (address_book[iii] != 0) {
+								if ((u8 *) address_book[iii] == next_val) {
+									should_set_next_val = TRUE;
+								}
+							} else {
+								temp = iii;
+								address_book[iii] = current_base;
+							}
+						}
+						if (temp == -1) {
+							kprint("Out of address book space\n");
+							return 0;
+						}
+						if (should_set_next_val) {
+							*(u8 *) (current_base + actual_size) = MEMORY_CLEAR;
+							*(u8 *) (current_base + actual_size + 1) = 0xFF;
+						}
+					}
+					(*(u8 *) (current_base + 1)) = ii;
+					*(u8 *) current_base = 0xF0;
+					return current_base + 2;
+				}
+			} else {
+				current_base += memory_space;
 			}
 		} else {
 			kprint("Memory corrupted\n");
@@ -488,6 +538,19 @@ MEMORY OS_Malloc(int val) {
 }
 
 BOOL OS_Free(MEMORY m) {
-
-	return FALSE;
+	m -= 2;
+	u8 *current_base = (u8 *) m;
+	if (*current_base != MEMORY_IN_USE) return FALSE;
+//	int size = 0x1 << (*(u8 *) (current_base + 1));
+	int is_in_address_book = FALSE;
+	for (int i = 0; i < MAX_NUMBER_OF_MALLOCS; ++i) {
+		if (address_book[i] == (usize) current_base) {
+			is_in_address_book = TRUE;
+			address_book[i] = 0;
+			break;
+		}
+	}
+	if (!is_in_address_book) return FALSE;
+	*current_base = MEMORY_CLEAR;
+	return TRUE;
 }

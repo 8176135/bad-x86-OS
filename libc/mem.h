@@ -8,6 +8,9 @@
 #define BASE_MEM_LOCATION 0x2000000
 #define BASE_STACK_LOCATION 0x800000
 
+#define MEMORY_IN_USE 0xF0
+#define MEMORY_CLEAR 0x0F
+
 void memory_copy(const u8 *source, u8 *dest, i32 nbytes);
 void memory_set(u8 *dest, u8 val, u32 len);
 

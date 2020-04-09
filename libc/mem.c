@@ -1,5 +1,4 @@
 #include "mem.h"
-#include "kernel.h"
 
 /// Works with overlapping copies
 void memory_copy(const u8 *source, u8 *dest, i32 nbytes) {
@@ -46,23 +45,4 @@ void memory_set(u8 *dest, u8 val, u32 len) {
 usize calculate_stack_location(u32 pid) {
     // Remember minimum PID is 1
     return BASE_STACK_LOCATION + MAX_STACK_SIZE * pid;
-}
-
-// Tells you the free address space for each of the 30 different sizes (32 - 2 (1 bytes, 2 bytes))
-MEMORY free_space[30];
-
-void init_memory() {
-	for (int i = 0; i < 30; ++i) {
-		free_space[i] = BASE_MEM_LOCATION;
-	}
-}
-
-MEMORY mem_alloc(u8 size) {
-	MEMORY ans = free_space[size];
-	for (int i = 0; i < 30; ++i) {
-		if (ans == free_space[i]) {
-
-		}
-	}
-	return ans;
 }
