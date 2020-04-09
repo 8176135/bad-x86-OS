@@ -2,6 +2,8 @@
 [extern isr_handler]
 [extern irq_handler]
 
+; Apparently this is kind of bad? See https://wiki.osdev.org/Interrupt_Service_Routines
+
 ; Common ISR code
 isr_common_stub:
     ; 1. Save CPU state

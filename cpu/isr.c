@@ -3,6 +3,8 @@
 #include "../drivers/screen.h"
 #include "../drivers/keyboard.h"
 #include "../libc/string.h"
+#include "../util/debugging.h"
+#include "../kernel/execute.h"
 #include "timer.h"
 #include "ports.h"
 
@@ -117,13 +119,13 @@ void isr_install() {
 }
 
 void isr_handler(registers_t *r) {
-    kprint("received interrupt: ");
-    char s[3];
-    int_to_ascii(r->int_no, s);
-    kprint(s);
-    kprint("\n");
-    kprint(exception_messages[r->int_no]);
-    kprint("\n----\n");
+//    dbg_hex("received interrupt: ", r->int_no);
+    if (r->int_no == 0x13) {
+        check_schedule(get_tick(), r);
+    } else {
+		dbg_hex("received interrupt: ", r->int_no);
+        kprint(exception_messages[r->int_no]);
+    }
 }
 
 void register_interrupt_handler(u8 n, isr_t handler) {

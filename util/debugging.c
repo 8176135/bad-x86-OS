@@ -6,7 +6,7 @@
 char debug_buffer[256];
 
 void dbg(char *label, int number) {
-    kprint("\n");
+//    kprint("\n");
     kprint(label);
     int_to_ascii(number, debug_buffer);
     kprint(debug_buffer);

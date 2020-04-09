@@ -2,7 +2,6 @@
 #include "isr.h"
 #include "ports.h"
 #include "../kernel/execute.h"
-#include "../libc/rust_types.h"
 
 u32 tick = 0;
 u32 fake_tick = 0;
@@ -27,5 +26,9 @@ void init_timer(u32 freq) {
     port_byte_out(0x43, 0b00110110); // Mode 2 (rate generator), Channel 0, Access lo + hi byte
     port_byte_out(0x40, low);
     port_byte_out(0x40, high);
+}
+
+u32 get_tick() {
+	return tick;
 }
 

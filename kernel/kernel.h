@@ -74,7 +74,7 @@ BOOL  OS_Read( FIFO f, int *val );
 /* Memory primitives */
 void   OS_InitMemory();
 MEMORY OS_Malloc( int val );
-BOOL   OS_Frfee( MEMORY m );
+BOOL   OS_Free( MEMORY m );
 
 /*==================================================================
  *        S T A N D A R D   I N L I N E    P R O C E D U R E S

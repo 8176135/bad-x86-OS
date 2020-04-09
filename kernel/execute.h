@@ -1,6 +1,3 @@
-//
-// Created by elsecaller on 4/6/20.
-//
 
 #ifndef INC_EXECUTE_H
 #define INC_EXECUTE_H

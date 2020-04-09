@@ -5,15 +5,20 @@
 #include "../libc/mem.h"
 #include "../libc/rust_types.h"
 #include "../cpu/descriptor_tables.h"
+#include "../cpu/timer.h"
 #include "execute.h"
 #include "../util/debugging.h"
 
 #include "../applications/counter/counter.h"
+#include "../applications/reminder/reminder.h"
+#include "../applications/idle/idle.h"
 
 #define MAXSPORADIC MAXPROCESS
 #define MAXDEVICE MAXPROCESS
 #define INVALID_IDX 999999999
+#define IDLE_PRIORITY 3
 
+int idle_pid;
 
 //// TODO: Dynamically allocate PPP
 int PPP[256];
@@ -154,34 +159,43 @@ void kernel_main() {
 }
 
 u32 last_change_tick = 0;
+// TODO: do we really need this? answer, no, since if something lasts multiple ticks, the problem kind of solves itself
+//u32 literally_the_most_recent_tick_number = 999999;
 u32 PPP_debt = 0;
 
 void check_schedule(u32 tick, registers_t *regs) {
 //	// TODO: Interrupts should already be disabled here... probably should check at some point
-	// Just clear it in case I'm wrong. 0x48   0x7c 0x90 	// 0x44    0xC0
+	// Just clear it in case I'm wrong.
 	asm("cli");
 	kprint("Tick");
-	for (usize i = 0; i < MAXPROCESS; ++i) {
-		if (processes[i].pid == INVALIDPID) {
-			continue;
-		}
-		if (processes[i].scheduling_level == DEVICE && tick % processes[i].n == 0) {
-			if (device_length >= MAXDEVICE) {
-				kprint("Schedule ERROR: DEVICE queue full (devices taking a long time?)\n");
-				// TODO: maybe don't abort, start deleting devices at the front of the queue. as they could just be stuck
-				OS_Abort();
+	i32 delta = tick - last_change_tick;
+	if (delta) {
+//		literally_the_most_recent_tick_number = tick;
+		for (usize i = 0; i < MAXPROCESS; ++i) {
+			if (processes[i].pid == INVALIDPID) {
+				continue;
 			}
-
-			device_buf[(device_idx + device_length) % MAXDEVICE] = processes[i].pid;
-			device_length++;
+			if (processes[i].scheduling_level == DEVICE && tick % processes[i].n == 0) {
+				if (device_length >= MAXDEVICE) {
+					kprint("Schedule ERROR: DEVICE queue full (devices taking a long time?)\n");
+					// TODO: maybe don't abort, start deleting devices at the front of the queue. as they could just be stuck
+					OS_Abort();
+				}
+				// NOTE: Assuming that no duplicates will appear because of how "fast" the devices will complete
+				device_buf[(device_idx + device_length) % MAXDEVICE] = processes[i].pid;
+				device_length++;
+			}
 		}
 	}
 
 	if (device_length > 0 && device_buf[device_idx] != currently_running_process_pid) {
+		PPP_debt += delta;
 		last_change_tick = tick;
 		switch_process(device_buf[device_idx], regs);
+		return;
 	}
 
+//	literally_the_most_recent_tick_number = tick;
 	process_t *current_process = 0;
 
 	if (PPP_index == INVALID_IDX) { // OS just started.
@@ -191,12 +205,10 @@ void check_schedule(u32 tick, registers_t *regs) {
 		goto LAUNCH_CURRENT_PPP;
 	}
 
-	i32 delta = tick - last_change_tick;
-
 	if (delta < 0) { // Reset clock if we overflowed
 		delta = 1;
 	}
-
+	PID next_pid = currently_running_process_pid;
 	if (currently_running_process_pid == INVALIDPID) { // Some process terminated early
 		// TODO: really need to restructure this at some point
 		goto PERIODIC_CHECK;
@@ -204,22 +216,40 @@ void check_schedule(u32 tick, registers_t *regs) {
 
 	current_process = &processes[process_index_from_pid(currently_running_process_pid)];
 	switch (current_process->scheduling_level) {
+
 		case DEVICE:
+			if (current_process->yielded) {
+				last_change_tick = tick - PPP_debt;
+				PPP_debt = 0;
+				delta = tick - last_change_tick;
+				if (delta < 0) { // Reset clock if we overflowed
+					delta = 1;
+				}
+				next_pid = pid_from_name(PPP[PPP_index]);
+				current_process = 0;
+				// Skips Sporadic TODO: This goto thing really is a slippery slope, planned on using 1, now I have 3 and counting
+				goto PERIODIC_CHECK;
+			}
 			if (delta > 2) {
 				kprint("WARNING, devices hogging CPU for longer than expected\n");
 			}
 			break;
 		case SPORADIC:
 			if (current_process->yielded) {
+				if (sporadic_length == 0) {
+					kprint("Assert failed: sporadic buffer length 0.\n");
+					OS_Abort();
+				}
+
 				// NOTE: Not setting old position to INVALID_PID, (To save using 1 temporary variable lol)
 				// if we are no longer using sporadic_length, this needs to be updated.
 				sporadic_buf[(sporadic_idx + sporadic_length) % MAXSPORADIC] = sporadic_buf[sporadic_idx];
 				sporadic_idx = (sporadic_idx + 1) % MAXSPORADIC;
 			}
-			// No break
+			// fall through
+		case IDLE_PRIORITY:
 		case PERIODIC:
 		PERIODIC_CHECK:;
-			PID next_pid = currently_running_process_pid;
 			if (PPPMax[PPP_index] < delta) { // Times up
 				last_change_tick = tick;
 				PPP_index = (PPP_index + 1) % PPPLen;
@@ -228,8 +258,10 @@ void check_schedule(u32 tick, registers_t *regs) {
 				dbg("Currently at PPP_index: ", PPP_index);
 			}
 			if (next_pid == INVALIDPID || (current_process && current_process->yielded)) { // No process is taking this name yet, or gave the time slot up
+//				dbg("Sporadic Length: ", sporadic_length);
 				if (sporadic_length == 0) { // No sporadic process scheduled either, just go and idle
 					kprint(" -- CPU Idling \n");
+					switch_process(idle_pid, regs);
 					return;
 				}
 				next_pid = sporadic_buf[sporadic_idx];
@@ -245,18 +277,6 @@ void check_schedule(u32 tick, registers_t *regs) {
 
 void OS_Init() {
 	init_descriptor_tables();
-
-	// NOTE: sizeof does not mean what I thought it meant
-//	char stuff[64];
-//	hex_to_ascii((u32)PPP, stuff);
-//	kprint("\n");
-//	kprint(stuff);
-//	kprint("\n");
-//	memory_set((u8*)stuff, 0, 64);
-//	hex_to_ascii(sizeof(processes), stuff);
-//	kprint("\n");
-//	kprint(stuff);
-//	kprint("\n");
 
 	// Don't really need to
 	memory_set((u8 *) PPP, 0, sizeof(PPP));
@@ -292,16 +312,19 @@ void OS_Init() {
 }
 
 void OS_Start() {
+	idle_pid = OS_Create((void *) idle_main, 0, IDLE_PRIORITY, 0);
 	OS_Create((void *) counter_main, 0, PERIODIC, 1);
 	OS_Create((void *) counter_main, 1, PERIODIC, 2);
 	OS_Create((void *) counter_main, 2, PERIODIC, 3);
 	OS_Create((void *) counter_main, 3, PERIODIC, 4);
 	OS_Create((void *) counter_main, 4, SPORADIC, 5);
 	OS_Create((void *) counter_main, 5, SPORADIC, 6);
+	OS_Create((void *) reminder_main, 5, DEVICE  , 10);
+	OS_Create((void *) reminder_main, 5, DEVICE  , 20);
 
 	irq_install();
 	kprint("OS Started!!");
-	while (1) {}
+	while (1) {} // Wait for a tick to take control away
 }
 
 void OS_Abort() {
@@ -321,7 +344,7 @@ PID OS_Create(void (*f)(void), i32 arg, u32 level, u32 n) {
 	if (process_index == INVALID_IDX) {
 		kprint("OS_Create ERROR: Too many active processes");
 		return INVALIDPID;
-	} else if (level != DEVICE && !register_name(n)) {
+	} else if (level != DEVICE && level != IDLE_PRIORITY && !register_name(n)) {
 		kprint("OS_Create ERROR: Name already taken");
 		return INVALIDPID;
 	}
@@ -342,6 +365,8 @@ PID OS_Create(void (*f)(void), i32 arg, u32 level, u32 n) {
 	processes[process_index].regs = new_regs;
 
 	switch (level) {
+		case IDLE_PRIORITY:
+			break;
 		case DEVICE:
 			// TODO: stuff keyboard interrupts here?
 			break;
@@ -379,8 +404,6 @@ void OS_Terminate(void) {
 			device_idx = (device_idx + 1) % MAXDEVICE;
 			device_length--;
 			break;
-		case PERIODIC: // No need to do anything
-			break;
 		case SPORADIC:
 			if (processes[idx].pid != sporadic_buf[sporadic_idx] ) {
 				dbg("ASSERT FAIL: OS_Terminate Sporadic PID doesn't match: ", processes[idx].pid);
@@ -390,7 +413,13 @@ void OS_Terminate(void) {
 			sporadic_buf[sporadic_idx] = INVALIDPID;
 			sporadic_idx = (sporadic_idx + 1) % MAXSPORADIC;
 			sporadic_length--;
+			// fall through
+		case PERIODIC:
+			unregister_name(processes[idx].n);
 			break;
+		case IDLE_PRIORITY:
+			kprint("Idle process is being terminated??????\n");
+			// fall through
 		default:
 			kprint("PANIC: INVALID level in OS_Terminate, corrupted?");
 			OS_Abort();
@@ -405,7 +434,60 @@ void OS_Yield(void) {
 	// TODO: Do we need to stop interrupts here? Same with above
 	asm volatile ("cli");
 	usize idx = process_index_from_pid(currently_running_process_pid);
+	if (processes[idx].yielded) {
+		asm volatile ("sti");
+		return;
+	}
 	processes[idx].yielded = TRUE;
+	if (processes[idx].scheduling_level == DEVICE) {
+		device_buf[device_idx] = INVALIDPID;
+		device_idx = (device_idx + 1) % MAXDEVICE;
+		device_length--;
+	}
 	dbg("This process yielded, Name: ", processes[idx].n);
-	asm volatile ("sti");
+	asm volatile ("sti"); // Enable interrupts
+	asm volatile ("int $0x13"); // Trigger a reserved interrupt number (Are you suppose to use reserved stuff?)
+}
+
+void OS_InitMemory() {
+//	memory_set(BASE_MEM_LOCATION)
+}
+
+/// Really stupid malloc. (a.k.a. ran-out-of-time-to-implement-something-good malloc)
+/// Some protection against the user application from wrongly freeing stuff, kind of
+MEMORY OS_Malloc(int val) {
+	u32 actual_size = val + 1;
+	// Round up to the next power of 2
+	// From: https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
+//	actual_size--;
+	actual_size |= actual_size >> 1;
+	actual_size |= actual_size >> 2;
+	actual_size |= actual_size >> 4;
+	actual_size |= actual_size >> 8;
+	actual_size |= actual_size >> 16;
+	actual_size++;
+
+	int initial = BASE_MEM_LOCATION;
+	usize i = BASE_MEM_LOCATION;
+	while (i < BASE_STACK_LOCATION) {
+		usize memory_space = 0x1 << (*(u8*)(i + 1));
+		if (*(u8 *)i == 0xF0) {
+			i += memory_space;
+		} else if (*(u8 *)i == 0x0F) {
+			if (memory_space >= actual_size) { // Yay, got enough space, allocate it
+				*(u8 *)i = 0xF0;
+//				memory_space =
+			}
+		} else {
+			kprint("Memory corrupted\n");
+			OS_Abort();
+		}
+	}
+
+	return 0;
+}
+
+BOOL OS_Free(MEMORY m) {
+
+	return FALSE;
 }

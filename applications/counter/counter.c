@@ -8,8 +8,8 @@ int counter_main() {
 
     char num[16];
     int arg = OS_GetParam();
-    for (int i = 0; i < 200; ++i) {
-        for (int i2 = 0; i2 < 10000000; i2 += 2) {
+    for (int i = 0; i < 100; ++i) {
+        for (int i2 = 0; i2 < 20000000; i2 += 2) {
             // Waste some clocks
             i2 -= 1;
         }
@@ -38,7 +38,7 @@ int counter_main() {
         int_to_ascii(i, num);
         kprint(num);
         kprint("\n");
-        if (i % 50 == 0 && i) {
+        if (i % 25 == 0 && i) {
 			OS_Yield();
         }
     }

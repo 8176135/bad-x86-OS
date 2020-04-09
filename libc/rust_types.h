@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// TODO: change to typedef?
+
 #define u8 uint8_t
 #define u32 uint32_t
 #define i32 int32_t
