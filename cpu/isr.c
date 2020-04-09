@@ -149,5 +149,5 @@ void irq_install() {
     /* IRQ0: timer */
     init_timer(1);
     /* IRQ1: keyboard */
-    init_keyboard();
+//    init_keyboard();
 }

@@ -12,21 +12,25 @@
 
 #define MAXSPORADIC MAXPROCESS
 #define MAXDEVICE MAXPROCESS
+#define INVALID_IDX 999999999
 
-//// TODO: Dynamically allocate PPP, because increasing this will cause a bootloop lol
+
+//// TODO: Dynamically allocate PPP
 int PPP[256];
 int PPPMax[256];
-int PPP_index = 0;
+int PPP_index;
 int PPPLen;
 //
 ///// Simple ring buffer queue of PIDs
 u32 sporadic_buf[MAXSPORADIC];
 usize sporadic_idx;
+// Technically not necessary, nice to have a double ended queue though
 usize sporadic_length;
 //
 ///// Simple ring buffer queue of PIDs
 u32 device_buf[MAXDEVICE];
 usize device_idx;
+// Technically not necessary, nice to have a double ended queue though
 usize device_length;
 
 // Keep track of the names available to prevent duplicate names.
@@ -49,8 +53,49 @@ void unregister_name(u32 n) {
 
 //// TODO: Dynamically allocate task list
 process_t processes[MAXPROCESS];
-u32 processes_length;
+//u32 processes_length;
+u32 pid_counter = 1;
 PID currently_running_process_pid = INVALIDPID;
+
+PID pid_from_name(i32 n) {
+	if (n == IDLE) {
+		return INVALIDPID;
+	}
+//	dbg("Process length: ", processes_length);
+	for (usize i = 0; i < MAXPROCESS; ++i) {
+		if (processes[i].pid != INVALIDPID && processes[i].n == n) {
+			return processes[i].pid;
+		}
+	}
+	return INVALIDPID;
+}
+
+usize process_index_from_pid(PID pid) {
+	if (pid == INVALIDPID) { // Catch error early
+		kprint("Panic: passed INVALIDPID to process_index_from_pid");
+		OS_Abort();
+	}
+
+	for (usize i = 0; i < MAXPROCESS; ++i) {
+		if (processes[i].pid == pid) {
+			return i;
+		}
+	}
+
+	dbg("Passed PID not found: ", pid);
+	OS_Abort();
+	// Will never run
+	return -1;
+}
+
+usize find_available_process_index() {
+	for (usize i = 0; i < MAXPROCESS; ++i) {
+		if (processes[i].pid == INVALIDPID) {
+			return i;
+		}
+	}
+	return INVALID_IDX;
+}
 
 ///// This function won't return
 void switch_process(PID new_pid, registers_t *old_regs) {
@@ -64,13 +109,15 @@ void switch_process(PID new_pid, registers_t *old_regs) {
 
 	if (currently_running_process_pid != INVALIDPID) {
 		// Do we need everything? Who knows! just copy them.
-		processes[currently_running_process_pid - 1].regs = *old_regs;
+		usize process_idx = process_index_from_pid(currently_running_process_pid);
+		processes[process_idx].regs = *old_regs;
+		processes[process_idx].yielded = FALSE;
 		// TODO: Get iret working I suppose, return this back to 0x08
-		processes[currently_running_process_pid - 1].regs.esp += 0x14; // MAGIC! (not really, cleans up the stack so when we return it is at the right place)
+		processes[process_idx].regs.esp += 0x14; // MAGIC! (not really, cleans up the stack so when we return it is at the right place)
 	}
 
 	currently_running_process_pid = new_pid;
-	registers_t *regs = &processes[currently_running_process_pid - 1].regs;
+	registers_t *regs = &processes[process_index_from_pid(currently_running_process_pid)].regs;
 
 	// TODO: Use iret and set eflags to set interrupt flag. Though now that I think about it, it should be fine as it is
 	// TODO: Add more stuff to restore
@@ -95,20 +142,7 @@ void switch_process(PID new_pid, registers_t *old_regs) {
 		ret			   "
 	: : "a"((int) registers));
 	kprint("You can't see this\n");
-}
-
-//
-PID pid_from_name(i32 n) {
-	if (n == IDLE) {
-		return INVALIDPID;
-	}
-	dbg("Process length: ", processes_length);
-	for (usize i = 0; i < processes_length; ++i) {
-		if (processes[i].n == n) {
-			return processes[i].pid;
-		}
-	}
-	return INVALIDPID;
+	OS_Abort(); // If we got here something's gone terribly wrong
 }
 
 void kernel_main() {
@@ -127,15 +161,18 @@ void check_schedule(u32 tick, registers_t *regs) {
 	// Just clear it in case I'm wrong. 0x48   0x7c 0x90 	// 0x44    0xC0
 	asm("cli");
 	kprint("Tick");
-	for (usize i = 0; i < processes_length; ++i) {
+	for (usize i = 0; i < MAXPROCESS; ++i) {
+		if (processes[i].pid == INVALIDPID) {
+			continue;
+		}
 		if (processes[i].scheduling_level == DEVICE && tick % processes[i].n == 0) {
 			if (device_length >= MAXDEVICE) {
 				kprint("Schedule ERROR: DEVICE queue full (devices taking a long time?)\n");
-				// TODO: maybe don't abort, start deleting devices at the front of the queue.
+				// TODO: maybe don't abort, start deleting devices at the front of the queue. as they could just be stuck
 				OS_Abort();
 			}
 
-			device_buf[(device_idx + device_length) % MAXDEVICE] = i;
+			device_buf[(device_idx + device_length) % MAXDEVICE] = processes[i].pid;
 			device_length++;
 		}
 	}
@@ -145,37 +182,59 @@ void check_schedule(u32 tick, registers_t *regs) {
 		switch_process(device_buf[device_idx], regs);
 	}
 
-	if (currently_running_process_pid == INVALIDPID) {
+	process_t *current_process = 0;
+
+	if (PPP_index == INVALID_IDX) { // OS just started.
 		last_change_tick = tick;
+		PPP_index = 0;
 		// TODO: This is such a bad idea
 		goto LAUNCH_CURRENT_PPP;
 	}
+
 	i32 delta = tick - last_change_tick;
 
-	process_t *current_process = &processes[currently_running_process_pid - 1];
+	if (delta < 0) { // Reset clock if we overflowed
+		delta = 1;
+	}
+
+	if (currently_running_process_pid == INVALIDPID) { // Some process terminated early
+		// TODO: really need to restructure this at some point
+		goto PERIODIC_CHECK;
+	}
+
+	current_process = &processes[process_index_from_pid(currently_running_process_pid)];
 	switch (current_process->scheduling_level) {
 		case DEVICE:
 			if (delta > 2) {
 				kprint("WARNING, devices hogging CPU for longer than expected\n");
 			}
 			break;
-		case SPORADIC: // Is your idle time up?
+		case SPORADIC:
+			if (current_process->yielded) {
+				// NOTE: Not setting old position to INVALID_PID, (To save using 1 temporary variable lol)
+				// if we are no longer using sporadic_length, this needs to be updated.
+				sporadic_buf[(sporadic_idx + sporadic_length) % MAXSPORADIC] = sporadic_buf[sporadic_idx];
+				sporadic_idx = (sporadic_idx + 1) % MAXSPORADIC;
+			}
+			// No break
 		case PERIODIC:
+		PERIODIC_CHECK:;
+			PID next_pid = currently_running_process_pid;
 			if (PPPMax[PPP_index] < delta) { // Times up
 				last_change_tick = tick;
 				PPP_index = (PPP_index + 1) % PPPLen;
 				LAUNCH_CURRENT_PPP:;
-				PID new_pid = pid_from_name(PPP[PPP_index]);
+				next_pid = pid_from_name(PPP[PPP_index]);
 				dbg("Currently at PPP_index: ", PPP_index);
-				if (new_pid == INVALIDPID) { // No process is taking this name yet, so just idle
-					if (sporadic_length == 0) { // No sporadic process scheduled either, just go and idle
-						kprint("CPU Idling \n");
-						return;
-					}
-					new_pid = sporadic_buf[sporadic_idx];
-				}
-				switch_process(new_pid, regs);
 			}
+			if (next_pid == INVALIDPID || (current_process && current_process->yielded)) { // No process is taking this name yet, or gave the time slot up
+				if (sporadic_length == 0) { // No sporadic process scheduled either, just go and idle
+					kprint(" -- CPU Idling \n");
+					return;
+				}
+				next_pid = sporadic_buf[sporadic_idx];
+			}
+			switch_process(next_pid, regs);
 			break;
 
 		default:
@@ -204,7 +263,7 @@ void OS_Init() {
 	memory_set((u8 *) PPPMax, 0, sizeof(PPPMax));
 
 	PPP[0] = 1;
-	PPPMax[0] = 10;
+	PPPMax[0] = 7;
 
 	PPP[1] = 2;
 	PPPMax[1] = 5;
@@ -216,26 +275,32 @@ void OS_Init() {
 	PPPMax[3] = 5;
 
 	PPP[4] = IDLE;
-	PPPMax[4] = 5;
+	PPPMax[4] = 3;
 
-	memory_set((u8 *) processes, INVALIDPID, sizeof(processes));
+	for (int i = 0; i < MAXPROCESS; ++i) {
+		processes[i].pid = INVALIDPID;
+	}
 	memory_set((u8 *) sporadic_buf, INVALIDPID, sizeof(sporadic_buf));
 	memory_set((u8 *) name_registry, 0, sizeof(name_registry));
 
-	PPP_index = 0;
+	PPP_index = INVALID_IDX;
 	PPPLen = 5;
-	processes_length = 0;
+//	processes_length = 0;
 	sporadic_idx = 0;
 
 	clear_screen();
 }
 
 void OS_Start() {
-	irq_install();
-	kprint("OS Started!!");
 	OS_Create((void *) counter_main, 0, PERIODIC, 1);
 	OS_Create((void *) counter_main, 1, PERIODIC, 2);
+	OS_Create((void *) counter_main, 2, PERIODIC, 3);
+	OS_Create((void *) counter_main, 3, PERIODIC, 4);
+	OS_Create((void *) counter_main, 4, SPORADIC, 5);
+	OS_Create((void *) counter_main, 5, SPORADIC, 6);
 
+	irq_install();
+	kprint("OS Started!!");
 	while (1) {}
 }
 
@@ -245,54 +310,36 @@ void OS_Abort() {
 }
 
 int OS_GetParam(void) {
-	return processes[currently_running_process_pid].arg;
-}
-
-void user_input(char *input) {
-	if (strcmp(input, "END") == 0) {
-		kprint("Stopping the CPU. Bye!\n");
-		asm volatile("hlt");
-	} else if (strcmp(input, "PAGE") == 0) {
-		uint32_t phys_addr;
-		uint32_t page = kmalloc(1000, 1, &phys_addr);
-		char page_str[16] = "";
-		hex_to_ascii(page, page_str);
-		char phys_str[16] = "";
-		hex_to_ascii(phys_addr, phys_str);
-		kprint("Page: ");
-		kprint(page_str);
-		kprint(", physical address: ");
-		kprint(phys_str);
-		kprint("\n");
-	}
-
-	kprint("You said: ");
-	kprint(input);
-	kprint("\n> ");
+	return processes[process_index_from_pid(currently_running_process_pid)].arg;
 }
 
 PID OS_Create(void (*f)(void), i32 arg, u32 level, u32 n) {
 	asm volatile ("cli"); // Disable interrupts;
 
-	PID new_pid = processes_length++ + 1;
-	if (new_pid > MAXPROCESS) {
+	usize process_index = find_available_process_index();
+
+	if (process_index == INVALID_IDX) {
 		kprint("OS_Create ERROR: Too many active processes");
 		return INVALIDPID;
 	} else if (level != DEVICE && !register_name(n)) {
 		kprint("OS_Create ERROR: Name already taken");
 		return INVALIDPID;
 	}
-	processes[new_pid - 1].scheduling_level = level;
-	processes[new_pid - 1].arg = arg;
-	processes[new_pid - 1].n = n;
-	processes[new_pid - 1].pid = new_pid;
-	// TODO: Write actual words
+
+	PID new_pid = pid_counter++;
+
+	processes[process_index].scheduling_level = level;
+	processes[process_index].arg = arg;
+	processes[process_index].n = n;
+	processes[process_index].pid = new_pid;
+	processes[process_index].yielded = 0;
+	// TODO: Write a comment here
 	static registers_t new_regs = {.ds = KERNEL_DS, .edi = 0, .esi = 0, .ebp = -1, .esp = -1, .ebx = KERNEL_DS, .edx = 0, .ecx = 0, .eax = 0, .int_no = 0, .err_code = 0, .eip = -1, .cs = KERNEL_CS, .ss = KERNEL_DS, .eflags = 0b00000000000000000000000100000000};
 	new_regs.ebp = calculate_stack_location(new_pid);
 	new_regs.esp = new_regs.ebp;
-	new_regs.eip = (u32) f; // Does this work?
+	new_regs.eip = (u32) f;
 
-	processes[new_pid - 1].regs = new_regs;
+	processes[process_index].regs = new_regs;
 
 	switch (level) {
 		case DEVICE:
@@ -316,4 +363,49 @@ PID OS_Create(void (*f)(void), i32 arg, u32 level, u32 n) {
 
 	asm volatile ("sti"); // Reenable Interrupts
 	return new_pid;
+}
+
+void OS_Terminate(void) {
+	asm volatile ("cli");
+	usize idx = process_index_from_pid(currently_running_process_pid);
+	switch (processes[idx].scheduling_level) {
+		case DEVICE:
+			if (processes[idx].pid != device_buf[device_idx] ) {
+				dbg("ASSERT FAIL: OS_Terminate Device PID doesn't match: ", processes[idx].pid);
+				dbg("!= ", device_buf[device_idx]);
+				OS_Abort();
+			}
+			device_buf[device_idx] = INVALIDPID;
+			device_idx = (device_idx + 1) % MAXDEVICE;
+			device_length--;
+			break;
+		case PERIODIC: // No need to do anything
+			break;
+		case SPORADIC:
+			if (processes[idx].pid != sporadic_buf[sporadic_idx] ) {
+				dbg("ASSERT FAIL: OS_Terminate Sporadic PID doesn't match: ", processes[idx].pid);
+				dbg("!= ", sporadic_buf[sporadic_idx]);
+				OS_Abort();
+			}
+			sporadic_buf[sporadic_idx] = INVALIDPID;
+			sporadic_idx = (sporadic_idx + 1) % MAXSPORADIC;
+			sporadic_length--;
+			break;
+		default:
+			kprint("PANIC: INVALID level in OS_Terminate, corrupted?");
+			OS_Abort();
+	}
+	processes[idx].pid = INVALIDPID;
+	currently_running_process_pid = INVALIDPID;
+	asm volatile ("sti");
+	while (1) {} // Wait for the check_schedule to execute again.
+}
+
+void OS_Yield(void) {
+	// TODO: Do we need to stop interrupts here? Same with above
+	asm volatile ("cli");
+	usize idx = process_index_from_pid(currently_running_process_pid);
+	processes[idx].yielded = TRUE;
+	dbg("This process yielded, Name: ", processes[idx].n);
+	asm volatile ("sti");
 }

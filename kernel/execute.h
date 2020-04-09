@@ -7,12 +7,14 @@
 
 #include "../libc/rust_types.h"
 #include "../cpu/isr.h"
+#include "kernel.h"
 
 typedef struct {
-    i32 pid;
+    PID pid;
     i32 arg;
     u32 scheduling_level;
     i32 n;
+    i32 yielded;
     registers_t regs;
 } process_t;
 
