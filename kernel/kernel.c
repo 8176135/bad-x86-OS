@@ -12,6 +12,7 @@
 #include "../applications/counter/counter.h"
 #include "../applications/reminder/reminder.h"
 #include "../applications/idle/idle.h"
+#include "../applications/memory_wiper/memory_wiper.h"
 
 #define MAXSPORADIC MAXPROCESS
 #define MAXDEVICE MAXPROCESS
@@ -21,8 +22,8 @@
 int idle_pid;
 
 //// TODO: Dynamically allocate PPP
-int PPP[256];
-int PPPMax[256];
+int PPP[128];
+int PPPMax[128];
 int PPP_index;
 int PPPLen;
 //
@@ -152,7 +153,7 @@ void switch_process(PID new_pid, registers_t *old_regs) {
 
 void kernel_main() {
 	OS_Init();
-
+	clear_screen();
 	OS_Start();
 	kprint("OS_Start returned... This really shouldn't happen\n");
 	OS_Abort();
@@ -278,7 +279,6 @@ void check_schedule(u32 tick, registers_t *regs) {
 
 void OS_Init() {
 	init_descriptor_tables();
-
 	// Don't really need to
 	memory_set((u8 *) PPP, 0, sizeof(PPP));
 	memory_set((u8 *) PPPMax, 0, sizeof(PPPMax));
@@ -309,11 +309,15 @@ void OS_Init() {
 //	processes_length = 0;
 	sporadic_idx = 0;
 
-	clear_screen();
+	OS_InitMemory();
 }
 
 void OS_Start() {
+	// Mandatory:
 	idle_pid = OS_Create((void *) idle_main, 0, IDLE_PRIORITY, 0);
+
+	// Uncomment this to test out memory management:
+//	OS_Create((void *) memory_wiper_main, 0, PERIODIC, 1);
 	OS_Create((void *) counter_main, 0, PERIODIC, 1);
 	OS_Create((void *) counter_main, 1, PERIODIC, 2);
 	OS_Create((void *) counter_main, 2, PERIODIC, 3);
@@ -395,6 +399,7 @@ PID OS_Create(void (*f)(void), i32 arg, u32 level, u32 n) {
 //   just push OS_Terminate onto the stack right before starting
 //   Does require `switch process` to know when a process is first starting though.
 //   Solves the iret problem too.
+// TODO: Clean up memory after an application has terminated.
 void OS_Terminate(void) {
 	asm volatile ("cli");
 	usize idx = process_index_from_pid(currently_running_process_pid);
@@ -455,13 +460,19 @@ void OS_Yield(void) {
 }
 
 // TODO: Replace this with a binary tree or hashset, also can keep track of PID of which process owns what memory
-#define MAX_NUMBER_OF_MALLOCS 256
+#define MAX_NUMBER_OF_MALLOCS 128
 usize address_book[MAX_NUMBER_OF_MALLOCS];
 
 void OS_InitMemory() {
-	memory_set((u8 *) address_book, 0, sizeof(address_book));
+	// I just spent 1.5 hours debugging why this memory set function isn't not working.
+	// Turns out that GDB just decided to randomly shift the address of `address_book` by 0x1000,
+	// So when I printed out address_book in the debugger it was giving me completely unrelated data.
+	// like WTF.
+	//
+	// So basically gdb is lying to you, address book is nice and empty after this memory_set function thank you.
+	memory_set(address_book, 0, sizeof(address_book));
 	*(u8 *) BASE_MEM_LOCATION = MEMORY_CLEAR;
-	*(u8 *) (BASE_MEM_LOCATION + 1) = 0xFF;
+	*(u8 *) (BASE_MEM_LOCATION + 1) = MAX_SINGLE_MALLOC_SIZE_SHIFT;
 }
 
 /// Malloc that walks through all the allocated memory regions, finding one big enough for the requested memory to be given
@@ -481,6 +492,10 @@ MEMORY OS_Malloc(int val) {
 	actual_size |= actual_size >> 8;
 	actual_size |= actual_size >> 16;
 	actual_size++;
+
+	if (actual_size > MAX_SINGLE_MALLOC_SIZE) {
+		return 0;
+	}
 
 	int total_available_space = 0;
 	usize current_base = BASE_MEM_LOCATION;
@@ -502,29 +517,31 @@ MEMORY OS_Malloc(int val) {
 				for (u8 ii = 0; ii < 32; ++ii) {
 					if (actual_size >> ii != 1) continue;
 					u8 *next_val = (u8 *) (current_base + actual_size);
-
+					int temp = -1;
+					int should_set_next_val = *next_val != MEMORY_IN_USE && *next_val != MEMORY_CLEAR;
 					if (*next_val != MEMORY_IN_USE && *next_val != MEMORY_CLEAR) {
-						int temp = -1;
-						int should_set_next_val = FALSE;
-						for (int iii = 0; iii < MAX_NUMBER_OF_MALLOCS; ++iii) {
-							if (address_book[iii] != 0) {
-								if ((u8 *) address_book[iii] == next_val) {
-									should_set_next_val = TRUE;
-								}
-							} else {
-								temp = iii;
-								address_book[iii] = current_base;
+							*(u8 *) (current_base + actual_size) = MEMORY_CLEAR;
+							*(u8 *) (current_base + actual_size + 1) = MAX_SINGLE_MALLOC_SIZE_SHIFT;
+					}
+
+					for (int iii = 0; iii < MAX_NUMBER_OF_MALLOCS; ++iii) {
+						if (address_book[iii] != 0) { // Double check that when we set the next free zone, we aren't stepping on some other memory
+							if ((u8 *) address_book[iii] == next_val) {
+								should_set_next_val = TRUE;
+							}
+						} else if (temp == -1) {
+							temp = iii;
+							address_book[iii] = current_base;
+							if (should_set_next_val == TRUE) {
+								break;
 							}
 						}
-						if (temp == -1) {
-							kprint("Out of address book space\n");
-							return 0;
-						}
-						if (should_set_next_val) {
-							*(u8 *) (current_base + actual_size) = MEMORY_CLEAR;
-							*(u8 *) (current_base + actual_size + 1) = 0xFF;
-						}
 					}
+					if (temp == -1) {
+						kprint("Out of address book space\n");
+						return 0;
+					}
+
 					(*(u8 *) (current_base + 1)) = ii;
 					*(u8 *) current_base = 0xF0;
 					return current_base + 2;
