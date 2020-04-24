@@ -14,6 +14,8 @@
 #include "../applications/idle/idle.h"
 #include "../applications/memory_wiper/memory_wiper.h"
 
+//#include <stdlib.h>
+
 #define MAXSPORADIC MAXPROCESS
 #define MAXDEVICE MAXPROCESS
 #define INVALID_IDX 999999999
@@ -26,7 +28,9 @@ int PPP[128];
 int PPPMax[128];
 int PPP_index;
 int PPPLen;
-//
+
+fifo_buf fifo_collection[MAXFIFO];
+
 ///// Simple ring buffer queue of PIDs
 u32 sporadic_buf[MAXSPORADIC];
 usize sporadic_idx;
@@ -39,26 +43,54 @@ usize device_idx;
 // Technically not necessary, nice to have a double ended queue though
 usize device_length;
 
+/// Contains only PERIODIC items
+semaphore semaphore_buf[MAXSEM];
+
 // Keep track of the names available to prevent duplicate names.
 u32 name_registry[(MAXPROCESS / 8 + 1)];
 
-int register_name(u32 n) {
+fifo_buf *get_fifo(FIFO handler) {
+	if (handler == INVALIDFIFO || handler >= MAXFIFO) {
+		kprint("Invalid handler passed to OS\n");
+		// TODO: Maybe change this to terminate
+		OS_Abort();
+	}
+
+	return &fifo_collection[handler - 1];
+}
+
+int register_bit(u32 *bitmap, u32 n) {
 	usize idx = n / 32;
-	if (name_registry[idx] >> (n % 32) != 0) { // Bit set
+	if (bitmap[idx] >> (n % 32) != 0) { // Bit set
 		return FALSE;
 	} else {
-		name_registry[idx] |= 0x1 << (n % 32);
+		bitmap[idx] |= 0x1u << (n % 32);
 		return TRUE;
 	}
 }
 
-void unregister_name(u32 n) {
+int unregister_bit(u32 *bitmap, u32 n) {
 	usize idx = n / 32;
-	name_registry[idx] &= 0x0 << (n % 32);
+	if (bitmap[idx] >> (n % 32) != 0) { // Bit set
+		bitmap[idx] &= 0x0u << (n % 32);
+		return TRUE;
+	} else {
+		return FALSE;
+	}
+}
+
+int register_name(u32 n) {
+	return register_bit(name_registry, n);
+}
+
+void unregister_name(u32 n) {
+	unregister_bit(name_registry, n);
 }
 
 //// TODO: Dynamically allocate task list
 process_t processes[MAXPROCESS];
+PID processes_yielded[MAXPROCESS];
+int processes_yielded_length;
 //u32 processes_length;
 u32 pid_counter = 1;
 PID currently_running_process_pid = INVALIDPID;
@@ -151,6 +183,9 @@ void switch_process(PID new_pid, registers_t *old_regs) {
 	OS_Abort(); // If we got here something's gone terribly wrong
 }
 
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "OCUnusedGlobalDeclarationInspection"
+
 void kernel_main() {
 	OS_Init();
 	clear_screen();
@@ -158,6 +193,8 @@ void kernel_main() {
 	kprint("OS_Start returned... This really shouldn't happen\n");
 	OS_Abort();
 }
+
+#pragma clang diagnostic pop
 
 u32 last_change_tick = 0;
 // TODO: do we really need this? answer, no, since if something lasts multiple ticks, the problem kind of solves itself
@@ -196,8 +233,7 @@ void check_schedule(u32 tick, registers_t *regs) {
 		return;
 	}
 
-//	literally_the_most_recent_tick_number = tick;
-	process_t *current_process = 0;
+	process_t *current_process = NULL;
 
 	if (PPP_index == INVALID_IDX) { // OS just started.
 		last_change_tick = tick;
@@ -259,7 +295,7 @@ void check_schedule(u32 tick, registers_t *regs) {
 				dbg("Currently at PPP_index: ", PPP_index);
 			}
 			if (next_pid == INVALIDPID || (current_process &&
-										   current_process->yielded)) { // No process is taking this name yet, or gave the time slot up
+										   current_process->yielded)) { // No process is taking this name yet, or gave the time slot up, or was sporadic
 //				dbg("Sporadic Length: ", sporadic_length);
 				if (sporadic_length == 0) { // No sporadic process scheduled either, just go and idle
 					kprint(" -- CPU Idling \n");
@@ -302,12 +338,20 @@ void OS_Init() {
 		processes[i].pid = INVALIDPID;
 	}
 	memory_set((u8 *) sporadic_buf, INVALIDPID, sizeof(sporadic_buf));
+	memory_set((u8 *) fifo_collection, 0, sizeof(fifo_collection));
+
+	for (int i = 0; i < MAXFIFO; ++i) {
+		fifo_collection[i].length = -1;
+	}
+
+	memory_set((u8 *) semaphore_buf, 0, sizeof(semaphore_buf));
 	memory_set((u8 *) name_registry, 0, sizeof(name_registry));
 
 	PPP_index = INVALID_IDX;
 	PPPLen = 5;
 //	processes_length = 0;
 	sporadic_idx = 0;
+	processes_yielded_length = 0;
 
 	OS_InitMemory();
 }
@@ -318,6 +362,7 @@ void OS_Start() {
 
 	// Uncomment this to test out memory management:
 //	OS_Create((void *) memory_wiper_main, 0, PERIODIC, 1);
+
 	OS_Create((void *) counter_main, 0, PERIODIC, 1);
 	OS_Create((void *) counter_main, 1, PERIODIC, 2);
 	OS_Create((void *) counter_main, 2, PERIODIC, 3);
@@ -329,7 +374,10 @@ void OS_Start() {
 
 	irq_install();
 	kprint("OS Started!!");
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-noreturn"
 	while (1) {} // Wait for a tick to take control away
+#pragma clang diagnostic pop
 }
 
 void OS_Abort() {
@@ -360,7 +408,7 @@ PID OS_Create(void (*f)(void), i32 arg, u32 level, u32 n) {
 	processes[process_index].arg = arg;
 	processes[process_index].n = n;
 	processes[process_index].pid = new_pid;
-	processes[process_index].yielded = 0;
+	processes[process_index].yielded = FALSE;
 	// TODO: Write a comment here
 	static registers_t new_regs = {.ds = KERNEL_DS, .edi = 0, .esi = 0, .ebp = -1, .esp = -1, .ebx = KERNEL_DS, .edx = 0, .ecx = 0, .eax = 0, .int_no = 0, .err_code = 0, .eip = -1, .cs = KERNEL_CS, .ss = KERNEL_DS, .eflags = 0b00000000000000000000000100000000};
 	new_regs.ebp = calculate_stack_location(new_pid);
@@ -437,7 +485,10 @@ void OS_Terminate(void) {
 	processes[idx].pid = INVALIDPID;
 	currently_running_process_pid = INVALIDPID;
 	asm volatile ("sti");
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-noreturn"
 	while (1) {} // Wait for the check_schedule to execute again.
+#pragma clang diagnostic pop
 }
 
 void OS_Yield(void) {
@@ -470,7 +521,7 @@ void OS_InitMemory() {
 	// like WTF.
 	//
 	// So basically gdb is lying to you, address book is nice and empty after this memory_set function thank you.
-	memory_set(address_book, 0, sizeof(address_book));
+	memory_set((uint8_t *) address_book, 0, sizeof(address_book));
 	*(u8 *) BASE_MEM_LOCATION = MEMORY_CLEAR;
 	*(u8 *) (BASE_MEM_LOCATION + 1) = MAX_SINGLE_MALLOC_SIZE_SHIFT;
 }
@@ -486,11 +537,11 @@ MEMORY OS_Malloc(int val) {
 	// Round up to the next power of 2
 	// From: https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
 //	actual_size--;
-	actual_size |= actual_size >> 1;
-	actual_size |= actual_size >> 2;
-	actual_size |= actual_size >> 4;
-	actual_size |= actual_size >> 8;
-	actual_size |= actual_size >> 16;
+	actual_size |= actual_size >> 1u;
+	actual_size |= actual_size >> 2u;
+	actual_size |= actual_size >> 4u;
+	actual_size |= actual_size >> 8u;
+	actual_size |= actual_size >> 16u;
 	actual_size++;
 
 	if (actual_size > MAX_SINGLE_MALLOC_SIZE) {
@@ -500,7 +551,7 @@ MEMORY OS_Malloc(int val) {
 	int total_available_space = 0;
 	usize current_base = BASE_MEM_LOCATION;
 	while (current_base < BASE_STACK_LOCATION - 2) {
-		usize memory_space = 0x1 << (*(u8 *) (current_base + 1));
+		usize memory_space = 0x1u << (*(u8 *) (current_base + 1));
 		if (*(u8 *) current_base == MEMORY_IN_USE) {
 			current_base += memory_space;
 			total_available_space = 0;
@@ -520,12 +571,13 @@ MEMORY OS_Malloc(int val) {
 					int temp = -1;
 					int should_set_next_val = *next_val != MEMORY_IN_USE && *next_val != MEMORY_CLEAR;
 					if (*next_val != MEMORY_IN_USE && *next_val != MEMORY_CLEAR) {
-							*(u8 *) (current_base + actual_size) = MEMORY_CLEAR;
-							*(u8 *) (current_base + actual_size + 1) = MAX_SINGLE_MALLOC_SIZE_SHIFT;
+						*(u8 *) (current_base + actual_size) = MEMORY_CLEAR;
+						*(u8 *) (current_base + actual_size + 1) = MAX_SINGLE_MALLOC_SIZE_SHIFT;
 					}
 
 					for (int iii = 0; iii < MAX_NUMBER_OF_MALLOCS; ++iii) {
-						if (address_book[iii] != 0) { // Double check that when we set the next free zone, we aren't stepping on some other memory
+						if (address_book[iii] !=
+							0) { // Double check that when we set the next free zone, we aren't stepping on some other memory
 							if ((u8 *) address_book[iii] == next_val) {
 								should_set_next_val = TRUE;
 							}
@@ -574,4 +626,136 @@ BOOL OS_Free(MEMORY m) {
 	if (!is_in_address_book) return FALSE;
 	*current_base = MEMORY_CLEAR;
 	return TRUE;
+}
+
+void OS_InitSem(int s, int n) {
+	semaphore_buf[s] = (semaphore) {.count = n, .tail = NULL, .head = NULL};
+}
+
+/// Going to assume that DEVICEs must always reserve semaphores first, so that they don't block.
+void OS_Wait(int s) {
+	// The interrupts look really weird... Basically we can't interrupt between checking for semaphore number and setting it
+	// Actually we can, just need a check afterwards TODO: maybe remove the interrupts
+
+	process_t *process = &processes[process_index_from_pid(currently_running_process_pid)];
+
+	asm volatile ("cli");
+	pid_ll *queue_pos = NULL;
+	if (semaphore_buf[s].count <= 0) { // Put ourselves in line
+
+		if (process->scheduling_level == DEVICE) {
+			// Well well well, someone messed up
+			kprint("Well well well, someone messed up, ur device didn't grab the semaphore in time, now everything breaks.\n");
+			OS_Abort();
+		} else if (process->scheduling_level == PERIODIC) {
+			// No need to be put on queue if sporadic, just wait till it's your turn again
+			queue_pos = (pid_ll *) OS_Malloc(sizeof(pid_ll));
+			queue_pos->next = NULL;
+			queue_pos->pid = currently_running_process_pid;
+			queue_pos->valid = TRUE;
+			if (semaphore_buf[s].tail != NULL) {
+				semaphore_buf[s].tail->next = queue_pos;
+			} else { // If tail is NULL, head must also be NULL
+				semaphore_buf[s].head = queue_pos;
+			}
+			semaphore_buf[s].tail = queue_pos;
+		}
+
+		do {
+			asm volatile ("sti");
+			OS_Yield();
+			asm volatile ("cli");
+		} while (semaphore_buf[s].count <= 0);
+	}
+	__atomic_fetch_sub(&semaphore_buf[s].count, 1, __ATOMIC_SEQ_CST);
+	if (queue_pos != NULL) {
+		queue_pos->valid = FALSE;
+	}
+	asm volatile ("sti");
+	// It's fine if it is interrupted here
+	register_bit(process->semaphores, s);
+
+}
+
+void cleanup_semaphore_buf(int s) {
+	// Cleanup semaphore
+	pid_ll *curr = semaphore_buf[s].head;
+	pid_ll *old = NULL;
+	while (curr != NULL) {
+		if (curr->valid == FALSE) {
+			if (old != NULL) {
+				old->next = curr->next;
+				OS_Free((MEMORY) curr);
+				curr = old->next;
+			} else {
+				semaphore_buf[s].head = curr->next;
+				OS_Free((MEMORY) curr);
+				curr = semaphore_buf[s].head;
+			}
+			continue;
+		}
+		old = curr;
+		curr = curr->next;
+	}
+	if (semaphore_buf[s].head == NULL) {
+		semaphore_buf[s].tail = NULL;
+	}
+}
+
+void OS_Signal(int s) {
+	process_t *process = &processes[process_index_from_pid(currently_running_process_pid)];
+	if (unregister_bit(process->semaphores, s)) { // Owns the semaphore before
+		asm volatile ("cli");
+		__atomic_fetch_add(&semaphore_buf[s].count, 1, __ATOMIC_SEQ_CST);
+
+		// Maybe we don't need to loop twice. It is clearer and easier to reason this way though
+		cleanup_semaphore_buf(s);
+		asm volatile ("sti");
+		if (process->scheduling_level <= PERIODIC) { // Nothing is higher priority than us. (Devices never wait)
+			return;
+		}
+
+		pid_ll *curr = semaphore_buf[s].head;
+		while (curr != NULL) { // Someone valid is waiting
+			process_t *other = &processes[process_index_from_pid(curr->pid)];
+			if (PPP[PPP_index] == other->n) { // If the current periodic process is in queue for resource
+				curr->valid = FALSE;
+				OS_Yield();
+				return;
+			}
+			curr = curr->next;
+		}
+	}
+}
+
+FIFO OS_InitFiFo() {
+	for (int i = 0; i < MAXFIFO; ++i) {
+		if (fifo_collection[i].length == -1) {
+			return i + 1;
+		}
+	}
+	return INVALIDFIFO;
+}
+
+void OS_Write(FIFO f, int val) {
+	fifo_buf *buf = get_fifo(f);
+	int next_elem_idx = (buf->idx + buf->length) % FIFOSIZE;
+	if (buf->length < FIFOSIZE) { // Not at full capacity
+		buf->length++;
+	} else {
+		buf->idx++;
+	}
+	buf->data[next_elem_idx] = val;
+}
+
+BOOL OS_Read(FIFO f, int *val) {
+	fifo_buf *buf = get_fifo(f);
+	if (buf->length > 0) {
+		*val = buf->data[buf->idx];
+		buf->idx = (buf->idx + 1) % FIFOSIZE;
+		buf->length--;
+		return TRUE;
+	} else {
+		return FALSE;
+	}
 }

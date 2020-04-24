@@ -21,6 +21,11 @@ Start in `kernel/kernel.c (kernel_main)` to just get straight to stuff relevant 
 `make run` to run the CPU, requires `qemu-system-i386`, `gcc` and 32 bit stuff for `ld`
  (Whatever is needed to run this: `ld -m elf_i386`). And `nasm` 
 
+Default run will start multiple processes to test process switching.
+Look in `OS_Start` and comment out the OS_Creates for `counter_main`, and uncomment the `memory_wipe_main` line to test memory allocation algorithm
+(You can have both running, but it will be difficult to see what memory_wipe_main outputted)
+
 `make debug` to automatically attach gdb debugger. Beware that it will randomly lie to you, in both 16 bit and 32 bit mode.
 
+`make clean` to remove compiled files, sometimes needed otherwise things might bug out
 Rex

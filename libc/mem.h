@@ -10,8 +10,8 @@
 
 // ~ 500mb
 // Loads of free memory (~500mb), but don't overflow. TODO: Might increase this by 1
-#define MAX_SINGLE_MALLOC_SIZE_SHIFT 0x1D
-#define MAX_SINGLE_MALLOC_SIZE (0x1 << MAX_SINGLE_MALLOC_SIZE_SHIFT)
+#define MAX_SINGLE_MALLOC_SIZE_SHIFT 0x1Du
+#define MAX_SINGLE_MALLOC_SIZE (0x1u << MAX_SINGLE_MALLOC_SIZE_SHIFT)
 
 #define MEMORY_IN_USE 0xF0
 #define MEMORY_CLEAR 0x0F
