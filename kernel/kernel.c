@@ -13,6 +13,7 @@
 #include "../applications/reminder/reminder.h"
 #include "../applications/idle/idle.h"
 #include "../applications/memory_wiper/memory_wiper.h"
+#include "../applications/sema/sema.h"
 
 //#include <stdlib.h>
 
@@ -61,7 +62,7 @@ fifo_buf *get_fifo(FIFO handler) {
 
 int register_bit(u32 *bitmap, u32 n) {
 	usize idx = n / 32;
-	if (bitmap[idx] >> (n % 32) != 0) { // Bit set
+	if (bitmap[idx] & (1u << (n % 32))) { // Bit set
 		return FALSE;
 	} else {
 		bitmap[idx] |= 0x1u << (n % 32);
@@ -71,7 +72,7 @@ int register_bit(u32 *bitmap, u32 n) {
 
 int unregister_bit(u32 *bitmap, u32 n) {
 	usize idx = n / 32;
-	if (bitmap[idx] >> (n % 32) != 0) { // Bit set
+	if (bitmap[idx] & (1u << (n % 32))) { // Bit set
 		bitmap[idx] &= 0x0u << (n % 32);
 		return TRUE;
 	} else {
@@ -143,7 +144,7 @@ void switch_process(PID new_pid, registers_t *old_regs) {
 		kprint("Invalid PID to switch to\n");
 		return;
 	}
-	kprint("Currently switching process\n");
+	kprint("\nCurrently switching process to: ");
 
 	if (currently_running_process_pid != INVALIDPID) {
 		// Do we need everything? Who knows! just copy them.
@@ -152,6 +153,7 @@ void switch_process(PID new_pid, registers_t *old_regs) {
 		processes[process_idx].yielded = FALSE;
 		// TODO: Get iret working I suppose, return this back to 0x08
 		processes[process_idx].regs.esp += 0x14; // MAGIC! (not really, cleans up the stack so when we return it is at the right place)
+		dbg("", processes[process_idx].n);
 	}
 
 	currently_running_process_pid = new_pid;
@@ -360,17 +362,19 @@ void OS_Start() {
 	// Mandatory:
 	idle_pid = OS_Create((void *) idle_main, 0, IDLE_PRIORITY, 0);
 
+	OS_Create((void *) sema_main, 0, PERIODIC, 2);
+
 	// Uncomment this to test out memory management:
 //	OS_Create((void *) memory_wiper_main, 0, PERIODIC, 1);
 
-	OS_Create((void *) counter_main, 0, PERIODIC, 1);
-	OS_Create((void *) counter_main, 1, PERIODIC, 2);
-	OS_Create((void *) counter_main, 2, PERIODIC, 3);
-	OS_Create((void *) counter_main, 3, PERIODIC, 4);
-	OS_Create((void *) counter_main, 4, SPORADIC, 5);
-	OS_Create((void *) counter_main, 5, SPORADIC, 6);
-	OS_Create((void *) reminder_main, 5, DEVICE, 10);
-	OS_Create((void *) reminder_main, 5, DEVICE, 20);
+//	OS_Create((void *) counter_main, 0, PERIODIC, 1);
+//	OS_Create((void *) counter_main, 1, PERIODIC, 2);
+//	OS_Create((void *) counter_main, 2, PERIODIC, 3);
+//	OS_Create((void *) counter_main, 3, PERIODIC, 4);
+//	OS_Create((void *) counter_main, 4, SPORADIC, 5);
+//	OS_Create((void *) counter_main, 5, SPORADIC, 6);
+//	OS_Create((void *) reminder_main, 5, DEVICE, 10);
+//	OS_Create((void *) reminder_main, 5, DEVICE, 20);
 
 	irq_install();
 	kprint("OS Started!!");
@@ -451,6 +455,7 @@ PID OS_Create(void (*f)(void), i32 arg, u32 level, u32 n) {
 void OS_Terminate(void) {
 	asm volatile ("cli");
 	usize idx = process_index_from_pid(currently_running_process_pid);
+	dbg("Terminating process: ", processes[idx].n);
 	switch (processes[idx].scheduling_level) {
 		case DEVICE:
 			if (processes[idx].pid != device_buf[device_idx]) {
@@ -731,6 +736,7 @@ void OS_Signal(int s) {
 FIFO OS_InitFiFo() {
 	for (int i = 0; i < MAXFIFO; ++i) {
 		if (fifo_collection[i].length == -1) {
+			fifo_collection[i].length = 0;
 			return i + 1;
 		}
 	}
